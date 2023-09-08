@@ -1,13 +1,15 @@
-// Copyright 2019-2021 Tauri Programme within The Commons Conservancy
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
 //! Items specific to the [`Runtime`](crate::Runtime)'s webview.
 
-use crate::{menu::Menu, window::DetachedWindow, Icon};
+use crate::{window::DetachedWindow, Icon};
 
+#[cfg(target_os = "macos")]
+use tauri_utils::TitleBarStyle;
 use tauri_utils::{
-  config::{WindowConfig, WindowUrl},
+  config::{WindowConfig, WindowEffectsConfig, WindowUrl},
   Theme,
 };
 
@@ -20,22 +22,59 @@ use std::{fmt, path::PathBuf};
 #[derive(Debug, Clone)]
 pub struct WebviewAttributes {
   pub url: WindowUrl,
+  pub user_agent: Option<String>,
   pub initialization_scripts: Vec<String>,
   pub data_directory: Option<PathBuf>,
   pub file_drop_handler_enabled: bool,
   pub clipboard: bool,
+  pub accept_first_mouse: bool,
+  pub additional_browser_args: Option<String>,
+  pub window_effects: Option<WindowEffectsConfig>,
+  pub incognito: bool,
 }
 
+impl From<&WindowConfig> for WebviewAttributes {
+  fn from(config: &WindowConfig) -> Self {
+    let mut builder = Self::new(config.url.clone());
+    builder = builder.incognito(config.incognito);
+    builder = builder.accept_first_mouse(config.accept_first_mouse);
+    if !config.file_drop_enabled {
+      builder = builder.disable_file_drop_handler();
+    }
+    if let Some(user_agent) = &config.user_agent {
+      builder = builder.user_agent(user_agent);
+    }
+    if let Some(additional_browser_args) = &config.additional_browser_args {
+      builder = builder.additional_browser_args(additional_browser_args);
+    }
+    if let Some(effects) = &config.window_effects {
+      builder = builder.window_effects(effects.clone());
+    }
+    builder
+  }
+}
 impl WebviewAttributes {
   /// Initializes the default attributes for a webview.
   pub fn new(url: WindowUrl) -> Self {
     Self {
       url,
+      user_agent: None,
       initialization_scripts: Vec::new(),
       data_directory: None,
       file_drop_handler_enabled: true,
       clipboard: false,
+      accept_first_mouse: false,
+      additional_browser_args: None,
+      window_effects: None,
+      incognito: false,
     }
+  }
+
+  /// Sets the user agent
+  #[must_use]
+  pub fn user_agent(mut self, user_agent: &str) -> Self {
+    self.user_agent = Some(user_agent.to_string());
+    self
   }
 
   /// Sets the init script.
@@ -68,6 +107,34 @@ impl WebviewAttributes {
     self.clipboard = true;
     self
   }
+
+  /// Sets whether clicking an inactive window also clicks through to the webview.
+  #[must_use]
+  pub fn accept_first_mouse(mut self, accept: bool) -> Self {
+    self.accept_first_mouse = accept;
+    self
+  }
+
+  /// Sets additional browser arguments. **Windows Only**
+  #[must_use]
+  pub fn additional_browser_args(mut self, additional_args: &str) -> Self {
+    self.additional_browser_args = Some(additional_args.to_string());
+    self
+  }
+
+  /// Sets window effects
+  #[must_use]
+  pub fn window_effects(mut self, effects: WindowEffectsConfig) -> Self {
+    self.window_effects = Some(effects);
+    self
+  }
+
+  /// Enable or disable incognito mode for the WebView.
+  #[must_use]
+  pub fn incognito(mut self, incognito: bool) -> Self {
+    self.incognito = incognito;
+    self
+  }
 }
 
 /// Do **NOT** implement this trait except for use in a custom [`Runtime`](crate::Runtime).
@@ -85,10 +152,6 @@ pub trait WindowBuilder: WindowBuilderBase {
 
   /// Initializes a new webview builder from a [`WindowConfig`]
   fn with_config(config: WindowConfig) -> Self;
-
-  /// Sets the menu for the window.
-  #[must_use]
-  fn menu(self, menu: Menu) -> Self;
 
   /// Show window in the center of the screen.
   #[must_use]
@@ -111,8 +174,37 @@ pub trait WindowBuilder: WindowBuilderBase {
   fn max_inner_size(self, max_width: f64, max_height: f64) -> Self;
 
   /// Whether the window is resizable or not.
+  /// When resizable is set to false, native window's maximize button is automatically disabled.
   #[must_use]
   fn resizable(self, resizable: bool) -> Self;
+
+  /// Whether the window's native maximize button is enabled or not.
+  /// If resizable is set to false, this setting is ignored.
+  ///
+  /// ## Platform-specific
+  ///
+  /// - **macOS:** Disables the "zoom" button in the window titlebar, which is also used to enter fullscreen mode.
+  /// - **Linux / iOS / Android:** Unsupported.
+  #[must_use]
+  fn maximizable(self, maximizable: bool) -> Self;
+
+  /// Whether the window's native minimize button is enabled or not.
+  ///
+  /// ## Platform-specific
+  ///
+  /// - **Linux / iOS / Android:** Unsupported.
+  #[must_use]
+  fn minimizable(self, minimizable: bool) -> Self;
+
+  /// Whether the window's native close button is enabled or not.
+  ///
+  /// ## Platform-specific
+  ///
+  /// - **Linux:** "GTK+ will do its best to convince the window manager not to show a close button.
+  ///   Depending on the system, this function may not have any effect when called on a window that is already visible"
+  /// - **iOS / Android:** Unsupported.
+  #[must_use]
+  fn closable(self, closable: bool) -> Self;
 
   /// The title of the window in the title bar.
   #[must_use]
@@ -122,9 +214,9 @@ pub trait WindowBuilder: WindowBuilderBase {
   #[must_use]
   fn fullscreen(self, fullscreen: bool) -> Self;
 
-  /// Whether the window will be initially hidden or focused.
+  /// Whether the window will be initially focused or not.
   #[must_use]
-  fn focus(self) -> Self;
+  fn focused(self, focused: bool) -> Self;
 
   /// Whether the window should be maximized upon creation.
   #[must_use]
@@ -134,7 +226,7 @@ pub trait WindowBuilder: WindowBuilderBase {
   #[must_use]
   fn visible(self, visible: bool) -> Self;
 
-  /// Whether the the window should be transparent. If this is true, writing colors
+  /// Whether the window should be transparent. If this is true, writing colors
   /// with alpha values different than `1.0` will produce a transparent window.
   #[cfg(any(not(target_os = "macos"), feature = "macos-private-api"))]
   #[cfg_attr(
@@ -152,12 +244,32 @@ pub trait WindowBuilder: WindowBuilderBase {
   #[must_use]
   fn always_on_top(self, always_on_top: bool) -> Self;
 
+  /// Whether the window should be visible on all workspaces or virtual desktops.
+  #[must_use]
+  fn visible_on_all_workspaces(self, visible_on_all_workspaces: bool) -> Self;
+
+  /// Prevents the window contents from being captured by other apps.
+  #[must_use]
+  fn content_protected(self, protected: bool) -> Self;
+
   /// Sets the window icon.
   fn icon(self, icon: Icon) -> crate::Result<Self>;
 
   /// Sets whether or not the window icon should be added to the taskbar.
   #[must_use]
   fn skip_taskbar(self, skip: bool) -> Self;
+
+  /// Sets whether or not the window has shadow.
+  ///
+  /// ## Platform-specific
+  ///
+  /// - **Windows:**
+  ///   - `false` has no effect on decorated window, shadows are always ON.
+  ///   - `true` will make ndecorated window have a 1px white border,
+  /// and on Windows 11, it will have a rounded corners.
+  /// - **Linux:** Unsupported.
+  #[must_use]
+  fn shadow(self, enable: bool) -> Self;
 
   /// Sets a parent to the window to be created.
   ///
@@ -189,14 +301,31 @@ pub trait WindowBuilder: WindowBuilderBase {
   #[must_use]
   fn owner_window(self, owner: HWND) -> Self;
 
+  /// Hide the titlebar. Titlebar buttons will still be visible.
+  #[cfg(target_os = "macos")]
+  #[must_use]
+  fn title_bar_style(self, style: TitleBarStyle) -> Self;
+
+  /// Hide the window title.
+  #[cfg(target_os = "macos")]
+  #[must_use]
+  fn hidden_title(self, hidden: bool) -> Self;
+
+  /// Defines the window [tabbing identifier] for macOS.
+  ///
+  /// Windows with matching tabbing identifiers will be grouped together.
+  /// If the tabbing identifier is not set, automatic tabbing will be disabled.
+  ///
+  /// [tabbing identifier]: <https://developer.apple.com/documentation/appkit/nswindow/1644704-tabbingidentifier>
+  #[cfg(target_os = "macos")]
+  #[must_use]
+  fn tabbing_identifier(self, identifier: &str) -> Self;
+
   /// Forces a theme or uses the system settings if None was provided.
   fn theme(self, theme: Option<Theme>) -> Self;
 
   /// Whether the icon was set or not.
   fn has_icon(&self) -> bool;
-
-  /// Gets the window menu.
-  fn get_menu(&self) -> Option<&Menu>;
 }
 
 /// IPC handler.

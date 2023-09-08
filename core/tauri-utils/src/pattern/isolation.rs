@@ -1,4 +1,4 @@
-// Copyright 2019-2021 Tauri Programme within The Commons Conservancy
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
@@ -8,7 +8,7 @@ use std::fmt::{Debug, Formatter};
 use std::string::FromUtf8Error;
 
 use aes_gcm::aead::Aead;
-use aes_gcm::{aead::NewAead, Aes256Gcm, Nonce};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use getrandom::{getrandom, Error as CsprngError};
 use serialize_to_javascript::{default_template, Template};
 
@@ -23,7 +23,7 @@ pub enum Error {
   #[error("CSPRNG error")]
   Csprng(#[from] CsprngError),
 
-  /// Something went wrong with decryping an AES-GCM payload
+  /// Something went wrong with decrypting an AES-GCM payload
   #[error("AES-GCM")]
   Aes,
 
@@ -57,7 +57,7 @@ impl AesGcmPair {
   fn new() -> Result<Self, Error> {
     let mut raw = [0u8; 32];
     getrandom(&mut raw)?;
-    let key = aes_gcm::Key::from_slice(&raw);
+    let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&raw);
     Ok(Self {
       raw,
       key: Aes256Gcm::new(key),
@@ -96,16 +96,14 @@ impl Keys {
   }
 
   /// Decrypts a message using the generated keys.
-  pub fn decrypt(&self, raw: RawIsolationPayload<'_>) -> Result<String, Error> {
+  pub fn decrypt(&self, raw: RawIsolationPayload<'_>) -> Result<Vec<u8>, Error> {
     let RawIsolationPayload { nonce, payload } = raw;
     let nonce: [u8; 12] = nonce.as_ref().try_into()?;
-    let bytes = self
+    self
       .aes_gcm
       .key
       .decrypt(Nonce::from_slice(&nonce), payload.as_ref())
-      .map_err(|_| self::Error::Aes)?;
-
-    String::from_utf8(bytes).map_err(Into::into)
+      .map_err(|_| self::Error::Aes)
   }
 }
 
@@ -116,11 +114,11 @@ pub struct RawIsolationPayload<'a> {
   payload: Cow<'a, [u8]>,
 }
 
-impl<'a> TryFrom<&'a str> for RawIsolationPayload<'a> {
+impl<'a> TryFrom<&'a Vec<u8>> for RawIsolationPayload<'a> {
   type Error = Error;
 
-  fn try_from(value: &'a str) -> Result<Self, Self::Error> {
-    serde_json::from_str(value).map_err(Into::into)
+  fn try_from(value: &'a Vec<u8>) -> Result<Self, Self::Error> {
+    serde_json::from_slice(value).map_err(Into::into)
   }
 }
 
@@ -141,6 +139,9 @@ pub struct IsolationJavascriptCodegen {
 pub struct IsolationJavascriptRuntime<'a> {
   /// The key used on the Rust backend and the Isolation Javascript
   pub runtime_aes_gcm_key: &'a [u8; 32],
+  /// The function that processes the IPC message.
+  #[raw]
+  pub process_ipc_message_fn: &'a str,
 }
 
 #[cfg(test)]

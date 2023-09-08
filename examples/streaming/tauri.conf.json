@@ -1,8 +1,12 @@
 {
-  "$schema": "../../tooling/cli/schema.json",
+  "$schema": "../../core/tauri-config-schema/schema.json",
   "build": {
-    "distDir": ["index.html"],
-    "devPath": ["index.html"],
+    "distDir": [
+      "index.html"
+    ],
+    "devPath": [
+      "index.html"
+    ],
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
     "withGlobalTauri": true
@@ -37,9 +41,6 @@
         "exceptionDomain": ""
       }
     },
-    "allowlist": {
-      "all": false
-    },
     "windows": [
       {
         "title": "Welcome to Tauri!",
@@ -50,10 +51,12 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; media-src stream: https://stream.localhost"
-    },
-    "updater": {
-      "active": false
+      "csp": "default-src 'self' ipc:; media-src stream: http://stream.localhost https://stream.localhost asset: http://asset.localhost https://asset.localhost",
+      "assetProtocol": {
+        "scope": [
+          "**/test_video.mp4"
+        ]
+      }
     }
   }
 }

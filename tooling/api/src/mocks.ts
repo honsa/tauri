@@ -1,3 +1,22 @@
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
+
+/** @ignore */
+declare global {
+  interface Window {
+    __TAURI_METADATA__: {
+      __windows: WindowDef[]
+      __currentWindow: WindowDef
+    }
+  }
+}
+
+/** @ignore */
+interface WindowDef {
+  label: string
+}
+
 interface IPCMessage {
   cmd: string
   callback: number
@@ -22,10 +41,10 @@ interface IPCMessage {
  * })
  *
  * test("mocked command", () => {
- *  mockIPC((cmd, args) => {
+ *  mockIPC((cmd, payload) => {
  *   switch (cmd) {
  *     case "add":
- *       return (args.a as number) + (args.b as number);
+ *       return (payload.a as number) + (payload.b as number);
  *     default:
  *       break;
  *     }
@@ -35,22 +54,43 @@ interface IPCMessage {
  * })
  * ```
  *
- * @param cb
+ * The callback function can also return a Promise:
+ * ```js
+ * import { mockIPC, clearMocks } from "@tauri-apps/api/mocks"
+ * import { invoke } from "@tauri-apps/api/tauri"
+ *
+ * afterEach(() => {
+ *    clearMocks()
+ * })
+ *
+ * test("mocked command", () => {
+ *  mockIPC((cmd, payload) => {
+ *   if(cmd === "get_data") {
+ *    return fetch("https://example.com/data.json")
+ *      .then((response) => response.json())
+ *   }
+ *  });
+ *
+ *  expect(invoke('get_data')).resolves.toBe({ foo: 'bar' });
+ * })
+ * ```
+ *
+ * @since 1.0.0
  */
 export function mockIPC(
-  cb: (cmd: string, args: Record<string, unknown>) => any
+  cb: (cmd: string, payload: Record<string, unknown>) => any | Promise<any>
 ): void {
   // eslint-disable-next-line @typescript-eslint/no-misused-promises
   window.__TAURI_IPC__ = async ({
     cmd,
     callback,
     error,
-    ...args
+    payload
   }: IPCMessage) => {
     try {
       // @ts-expect-error The function key is dynamic and therefore not typed
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-      window[`_${callback}`](await cb(cmd, args))
+      window[`_${callback}`](await cb(cmd, payload))
     } catch (err) {
       // @ts-expect-error The function key is dynamic and therefore not typed
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call
@@ -85,25 +125,19 @@ export function mockIPC(
  * mockWindows("main", "second", "third");
  *
  * mockIPC((cmd, args) => {
- *  if (cmd === "tauri") {
- *    if (
- *      args?.__tauriModule === "Window" &&
- *      args?.message?.cmd === "manage" &&
- *      args?.message?.data?.cmd?.type === "close"
- *    ) {
- *      console.log('closing window!');
- *    }
+ *  if (cmd === "plugin:event|emit") {
+ *    console.log('emit event', args?.event, args?.payload);
  *  }
  * });
  *
- * const { getCurrent } = await import("@tauri-apps/api/window");
- *
- * const win = getCurrent();
- * await win.close(); // this will cause the mocked IPC handler to log to the console.
+ * const { emit } = await import("@tauri-apps/api/event");
+ * await emit('loaded'); // this will cause the mocked IPC handler to log to the console.
  * ```
  *
  * @param current Label of window this JavaScript context is running in.
  * @param additionalWindows Label of additional windows the app has.
+ *
+ * @since 1.0.0
  */
 export function mockWindows(
   current: string,
@@ -138,10 +172,12 @@ export function mockWindows(
  *    expect(window).not.toHaveProperty("__TAURI_METADATA__")
  * })
  * ```
+ *
+ * @since 1.0.0
  */
 export function clearMocks(): void {
-  // @ts-expect-error
+  // @ts-expect-error "The operand of a 'delete' operator must be optional' does not matter in this case
   delete window.__TAURI_IPC__
-  // @ts-expect-error
+  // @ts-expect-error "The operand of a 'delete' operator must be optional' does not matter in this case
   delete window.__TAURI_METADATA__
 }

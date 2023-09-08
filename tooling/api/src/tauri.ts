@@ -1,4 +1,4 @@
-// Copyright 2019-2021 Tauri Programme within The Commons Conservancy
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
@@ -11,12 +11,17 @@
 
 /** @ignore */
 declare global {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface Window {
-    __TAURI_IPC__: (message: any) => void
-    ipc: {
-      postMessage: (args: string) => void
+    __TAURI__: {
+      path: {
+        __sep: string
+        __delimiter: string
+      }
+
+      convertFileSrc: (src: string, protocol: string) => string
     }
+
+    __TAURI_IPC__: (message: any) => void
   }
 }
 
@@ -30,6 +35,8 @@ function uid(): number {
  * The backend uses the identifier to `eval()` the callback.
  *
  * @return A unique identifier associated with the callback function.
+ *
+ * @since 1.0.0
  */
 function transformCallback(
   callback?: (response: any) => void,
@@ -53,9 +60,83 @@ function transformCallback(
   return identifier
 }
 
-/** Command arguments. */
-interface InvokeArgs {
-  [key: string]: unknown
+class Channel<T = unknown> {
+  id: number
+  // @ts-expect-error field used by the IPC serializer
+  private readonly __TAURI_CHANNEL_MARKER__ = true
+  #onmessage: (response: T) => void = () => {
+    // no-op
+  }
+
+  constructor() {
+    this.id = transformCallback((response: T) => {
+      this.#onmessage(response)
+    })
+  }
+
+  set onmessage(handler: (response: T) => void) {
+    this.#onmessage = handler
+  }
+
+  get onmessage(): (response: T) => void {
+    return this.#onmessage
+  }
+
+  toJSON(): string {
+    return `__CHANNEL__:${this.id}`
+  }
+}
+
+class PluginListener {
+  plugin: string
+  event: string
+  channelId: number
+
+  constructor(plugin: string, event: string, channelId: number) {
+    this.plugin = plugin
+    this.event = event
+    this.channelId = channelId
+  }
+
+  async unregister(): Promise<void> {
+    return invoke(`plugin:${this.plugin}|remove_listener`, {
+      event: this.event,
+      channelId: this.channelId
+    })
+  }
+}
+
+/**
+ * Adds a listener to a plugin event.
+ *
+ * @returns The listener object to stop listening to the events.
+ *
+ * @since 2.0.0
+ */
+async function addPluginListener<T>(
+  plugin: string,
+  event: string,
+  cb: (payload: T) => void
+): Promise<PluginListener> {
+  const handler = new Channel<T>()
+  handler.onmessage = cb
+  return invoke(`plugin:${plugin}|register_listener`, { event, handler }).then(
+    () => new PluginListener(plugin, event, handler.id)
+  )
+}
+
+/**
+ * Command arguments.
+ *
+ * @since 1.0.0
+ */
+type InvokeArgs = Record<string, unknown> | number[] | ArrayBuffer | Uint8Array
+
+/**
+ * @since 2.0.0
+ */
+interface InvokeOptions {
+  headers: Headers | Record<string, string>
 }
 
 /**
@@ -68,9 +149,16 @@ interface InvokeArgs {
  *
  * @param cmd The command name.
  * @param args The optional arguments to pass to the command.
+ * @param options The request options.
  * @return A promise resolving or rejecting to the backend response.
+ *
+ * @since 1.0.0
  */
-async function invoke<T>(cmd: string, args: InvokeArgs = {}): Promise<T> {
+async function invoke<T>(
+  cmd: string,
+  args: InvokeArgs = {},
+  options?: InvokeOptions
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const callback = transformCallback((e: T) => {
       resolve(e)
@@ -85,15 +173,16 @@ async function invoke<T>(cmd: string, args: InvokeArgs = {}): Promise<T> {
       cmd,
       callback,
       error,
-      ...args
+      payload: args,
+      options
     })
   })
 }
 
 /**
  * Convert a device file path to an URL that can be loaded by the webview.
- * Note that `asset:` and `https://asset.localhost` must be added to [`tauri.security.csp`](https://tauri.app/v1/api/config/#securityconfig.csp) in `tauri.conf.json`.
- * Example CSP value: `"csp": "default-src 'self'; img-src 'self' asset: https://asset.localhost"` to use the asset protocol on image sources.
+ * Note that `asset:`, `http://asset.localhost` and `https://asset.localhost` must be added to [`tauri.security.csp`](https://tauri.app/v1/api/config/#securityconfig.csp) in `tauri.conf.json`.
+ * Example CSP value: `"csp": "default-src 'self' ipc: http://ipc.localhost https://ipc.localhost; img-src 'self' asset: http://asset.localhost https://asset.localhost"` to use the asset protocol on image sources.
  *
  * Additionally, `asset` must be added to [`tauri.allowlist.protocol`](https://tauri.app/v1/api/config/#allowlistconfig.protocol)
  * in `tauri.conf.json` and its access scope must be defined on the `assetScope` array on the same `protocol` object.
@@ -102,10 +191,10 @@ async function invoke<T>(cmd: string, args: InvokeArgs = {}): Promise<T> {
  * @param  protocol The protocol to use. Defaults to `asset`. You only need to set this when using a custom protocol.
  * @example
  * ```typescript
- * import { appDir, join } from '@tauri-apps/api/path';
+ * import { appDataDir, join } from '@tauri-apps/api/path';
  * import { convertFileSrc } from '@tauri-apps/api/tauri';
- * const appDirPath = await appDir();
- * const filePath = await join(appDir, 'assets/video.mp4');
+ * const appDataDirPath = await appDataDir();
+ * const filePath = await join(appDataDirPath, 'assets/video.mp4');
  * const assetUrl = convertFileSrc(filePath);
  *
  * const video = document.getElementById('my-video');
@@ -117,14 +206,20 @@ async function invoke<T>(cmd: string, args: InvokeArgs = {}): Promise<T> {
  * ```
  *
  * @return the URL that can be used as source on the webview.
+ *
+ * @since 1.0.0
  */
 function convertFileSrc(filePath: string, protocol = 'asset'): string {
-  const path = encodeURIComponent(filePath)
-  return navigator.userAgent.includes('Windows')
-    ? `https://${protocol}.localhost/${path}`
-    : `${protocol}://${path}`
+  return window.__TAURI__.convertFileSrc(filePath, protocol)
 }
 
-export type { InvokeArgs }
+export type { InvokeArgs, InvokeOptions }
 
-export { transformCallback, invoke, convertFileSrc }
+export {
+  transformCallback,
+  Channel,
+  PluginListener,
+  addPluginListener,
+  invoke,
+  convertFileSrc
+}

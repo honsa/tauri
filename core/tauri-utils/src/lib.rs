@@ -1,11 +1,22 @@
-// Copyright 2019-2021 Tauri Programme within The Commons Conservancy
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
-//! Tauri utility helpers
-#![warn(missing_docs, rust_2018_idioms)]
+//! [![](https://github.com/tauri-apps/tauri/raw/dev/.github/splash.png)](https://tauri.app)
+//!
+//! This crate contains common code that is reused in many places and offers useful utilities like parsing configuration files, detecting platform triples, injecting the CSP, and managing assets.
 
-use std::fmt::Display;
+#![doc(
+  html_logo_url = "https://github.com/tauri-apps/tauri/raw/dev/app-icon.png",
+  html_favicon_url = "https://github.com/tauri-apps/tauri/raw/dev/app-icon.png"
+)]
+#![warn(missing_docs, rust_2018_idioms)]
+#![allow(clippy::deprecated_semver)]
+
+use std::{
+  fmt::Display,
+  path::{Path, PathBuf},
+};
 
 use semver::Version;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -14,6 +25,7 @@ pub mod assets;
 pub mod config;
 pub mod html;
 pub mod io;
+pub mod mime_type;
 pub mod platform;
 /// Prepare application resources and sidecars.
 #[cfg(feature = "resources")]
@@ -33,6 +45,8 @@ pub struct PackageInfo {
   pub authors: &'static str,
   /// The crate description.
   pub description: &'static str,
+  /// The crate name.
+  pub crate_name: &'static str,
 }
 
 impl PackageInfo {
@@ -46,6 +60,161 @@ impl PackageInfo {
     }
     #[cfg(not(target_os = "linux"))]
     self.name.clone()
+  }
+}
+
+#[allow(deprecated)]
+mod window_effects {
+  use super::*;
+
+  #[derive(Debug, PartialEq, Eq, Clone, Copy, Deserialize, Serialize)]
+  #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+  #[serde(rename_all = "camelCase")]
+  /// Platform-specific window effects
+  pub enum WindowEffect {
+    /// A default material appropriate for the view's effectiveAppearance. **macOS 10.14-**
+    #[deprecated(
+      since = "macOS 10.14",
+      note = "You should instead choose an appropriate semantic material."
+    )]
+    AppearanceBased,
+    /// **macOS 10.14-**
+    #[deprecated(since = "macOS 10.14", note = "Use a semantic material instead.")]
+    Light,
+    /// **macOS 10.14-**
+    #[deprecated(since = "macOS 10.14", note = "Use a semantic material instead.")]
+    Dark,
+    /// **macOS 10.14-**
+    #[deprecated(since = "macOS 10.14", note = "Use a semantic material instead.")]
+    MediumLight,
+    /// **macOS 10.14-**
+    #[deprecated(since = "macOS 10.14", note = "Use a semantic material instead.")]
+    UltraDark,
+    /// **macOS 10.10+**
+    Titlebar,
+    /// **macOS 10.10+**
+    Selection,
+    /// **macOS 10.11+**
+    Menu,
+    /// **macOS 10.11+**
+    Popover,
+    /// **macOS 10.11+**
+    Sidebar,
+    /// **macOS 10.14+**
+    HeaderView,
+    /// **macOS 10.14+**
+    Sheet,
+    /// **macOS 10.14+**
+    WindowBackground,
+    /// **macOS 10.14+**
+    HudWindow,
+    /// **macOS 10.14+**
+    FullScreenUI,
+    /// **macOS 10.14+**
+    Tooltip,
+    /// **macOS 10.14+**
+    ContentBackground,
+    /// **macOS 10.14+**
+    UnderWindowBackground,
+    /// **macOS 10.14+**
+    UnderPageBackground,
+    /// Mica effect that matches the system dark perefence **Windows 11 Only**
+    Mica,
+    /// Mica effect with dark mode but only if dark mode is enabled on the system **Windows 11 Only**
+    MicaDark,
+    /// Mica effect with light mode **Windows 11 Only**
+    MicaLight,
+    /// **Windows 7/10/11(22H1) Only**
+    ///
+    /// ## Notes
+    ///
+    /// This effect has bad performance when resizing/dragging the window on Windows 11 build 22621.
+    Blur,
+    /// **Windows 10/11 Only**
+    ///
+    /// ## Notes
+    ///
+    /// This effect has bad performance when resizing/dragging the window on Windows 10 v1903+ and Windows 11 build 22000.
+    Acrylic,
+  }
+
+  /// Window effect state **macOS only**
+  ///
+  /// <https://developer.apple.com/documentation/appkit/nsvisualeffectview/state>
+  #[derive(Debug, PartialEq, Eq, Clone, Copy, Deserialize, Serialize)]
+  #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+  #[serde(rename_all = "camelCase")]
+  pub enum WindowEffectState {
+    /// Make window effect state follow the window's active state
+    FollowsWindowActiveState,
+    /// Make window effect state always active
+    Active,
+    /// Make window effect state always inactive
+    Inactive,
+  }
+}
+
+pub use window_effects::{WindowEffect, WindowEffectState};
+
+/// How the window title bar should be displayed on macOS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum TitleBarStyle {
+  /// A normal title bar.
+  Visible,
+  /// Makes the title bar transparent, so the window background color is shown instead.
+  ///
+  /// Useful if you don't need to have actual HTML under the title bar. This lets you avoid the caveats of using `TitleBarStyle::Overlay`. Will be more useful when Tauri lets you set a custom window background color.
+  Transparent,
+  /// Shows the title bar as a transparent overlay over the window's content.
+  ///
+  /// Keep in mind:
+  /// - The height of the title bar is different on different OS versions, which can lead to window the controls and title not being where you don't expect.
+  /// - You need to define a custom drag region to make your window draggable, however due to a limitation you can't drag the window when it's not in focus <https://github.com/tauri-apps/tauri/issues/4316>.
+  /// - The color of the window title depends on the system theme.
+  Overlay,
+}
+
+impl Default for TitleBarStyle {
+  fn default() -> Self {
+    Self::Visible
+  }
+}
+
+impl Serialize for TitleBarStyle {
+  fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    serializer.serialize_str(self.to_string().as_ref())
+  }
+}
+
+impl<'de> Deserialize<'de> for TitleBarStyle {
+  fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    let s = String::deserialize(deserializer)?;
+    Ok(match s.to_lowercase().as_str() {
+      "transparent" => Self::Transparent,
+      "overlay" => Self::Overlay,
+      _ => Self::Visible,
+    })
+  }
+}
+
+impl Display for TitleBarStyle {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(
+      f,
+      "{}",
+      match self {
+        Self::Visible => "Visible",
+        Self::Transparent => "Transparent",
+        Self::Overlay => "Overlay",
+      }
+    )
   }
 }
 
@@ -230,4 +399,11 @@ macro_rules! debug_eprintln {
     #[cfg(not(debug_assertions))]
     $crate::consume_unused_variable!($($arg)*);
   };
+}
+
+/// Reconstructs a path from its components using the platform separator then converts it to String and removes UNC prefixes on Windows if it exists.
+pub fn display_path<P: AsRef<Path>>(p: P) -> String {
+  dunce::simplified(&p.as_ref().components().collect::<PathBuf>())
+    .display()
+    .to_string()
 }

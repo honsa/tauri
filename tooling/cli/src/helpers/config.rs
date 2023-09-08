@@ -1,9 +1,10 @@
-// Copyright 2019-2021 Tauri Programme within The Commons Conservancy
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
 use anyhow::Context;
 use json_patch::merge;
+use log::error;
 use once_cell::sync::Lazy;
 use serde_json::Value as JsonValue;
 
@@ -11,7 +12,7 @@ pub use tauri_utils::config::*;
 
 use std::{
   collections::HashMap,
-  env::{set_var, var_os},
+  env::{current_dir, set_current_dir, set_var, var_os},
   ffi::OsStr,
   process::exit,
   sync::{Arc, Mutex},
@@ -96,6 +97,20 @@ pub fn wix_settings(config: WixConfig) -> tauri_bundler::WixSettings {
   }
 }
 
+pub fn nsis_settings(config: NsisConfig) -> tauri_bundler::NsisSettings {
+  tauri_bundler::NsisSettings {
+    template: config.template,
+    license: config.license,
+    header_image: config.header_image,
+    sidebar_image: config.sidebar_image,
+    installer_icon: config.installer_icon,
+    install_mode: config.install_mode,
+    languages: config.languages,
+    custom_language_files: config.custom_language_files,
+    display_language_selector: config.display_language_selector,
+  }
+}
+
 fn config_handle() -> &'static ConfigHandle {
   static CONFING_HANDLE: Lazy<ConfigHandle> = Lazy::new(Default::default);
   &CONFING_HANDLE
@@ -135,35 +150,40 @@ fn get_internal(merge_config: Option<&str>, reload: bool) -> crate::Result<Confi
     || config_path.extension() == Some(OsStr::new("json5"))
   {
     let schema: JsonValue = serde_json::from_str(include_str!("../../schema.json"))?;
-    let mut scope = valico::json_schema::Scope::new();
-    let schema = scope.compile_and_return(schema, false).unwrap();
-    let state = schema.validate(&config);
-    if !state.errors.is_empty() {
-      for error in state.errors {
-        let path = error
-          .get_path()
-          .chars()
-          .skip(1)
-          .collect::<String>()
-          .replace('/', " > ");
+    let schema = jsonschema::JSONSchema::compile(&schema).unwrap();
+    let result = schema.validate(&config);
+    if let Err(errors) = result {
+      for error in errors {
+        let path = error.instance_path.clone().into_vec().join(" > ");
         if path.is_empty() {
-          eprintln!(
-            "`{config_file_name}` error: {}",
-            error.get_detail().unwrap_or_else(|| error.get_title()),
-          );
+          error!("`{}` error: {}", config_file_name, error);
         } else {
-          eprintln!(
-            "`{config_file_name}` error on `{}`: {}",
-            path,
-            error.get_detail().unwrap_or_else(|| error.get_title()),
-          );
+          error!("`{}` error on `{}`: {}", config_file_name, path, error);
         }
       }
-      exit(1);
+      if !reload {
+        exit(1);
+      }
     }
   }
 
+  // the `Config` deserializer for `package > version` can resolve the version from a path relative to the config path
+  // so we actually need to change the current working directory here
+  let current_dir = current_dir()?;
+  set_current_dir(config_path.parent().unwrap())?;
   let config: Config = serde_json::from_value(config)?;
+  // revert to previous working directory
+  set_current_dir(current_dir)?;
+
+  for (plugin, conf) in &config.plugins.0 {
+    set_var(
+      format!(
+        "TAURI_{}_PLUGIN_CONFIG",
+        plugin.to_uppercase().replace('-', "_")
+      ),
+      serde_json::to_string(&conf)?,
+    );
+  }
 
   *config_handle().lock().unwrap() = Some(ConfigMetadata {
     inner: config,

@@ -1,4 +1,5 @@
-// Copyright 2019-2021 Tauri Programme within The Commons Conservancy
+// Copyright 2016-2019 Cargo-Bundle developers <https://github.com/burtonageo/cargo-bundle>
+// Copyright 2019-2023 Tauri Programme within The Commons Conservancy
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
@@ -6,7 +7,7 @@ use super::category::AppCategory;
 use crate::bundle::{common, platform::target_triple};
 pub use tauri_utils::config::WebviewInstallMode;
 use tauri_utils::{
-  config::BundleType,
+  config::{BundleType, FileAssociation, NSISInstallerMode},
   resources::{external_binaries, ResourcePaths},
 };
 
@@ -25,6 +26,8 @@ pub enum PackageType {
   IosBundle,
   /// The Windows bundle (.msi).
   WindowsMsi,
+  /// The NSIS bundle (.exe).
+  Nsis,
   /// The Linux Debian package bundle (.deb).
   Deb,
   /// The Linux RPM bundle (.rpm).
@@ -43,6 +46,7 @@ impl From<BundleType> for PackageType {
       BundleType::Deb => Self::Deb,
       BundleType::AppImage => Self::AppImage,
       BundleType::Msi => Self::WindowsMsi,
+      BundleType::Nsis => Self::Nsis,
       BundleType::App => Self::MacOsBundle,
       BundleType::Dmg => Self::Dmg,
       BundleType::Updater => Self::Updater,
@@ -59,6 +63,7 @@ impl PackageType {
       "deb" => Some(PackageType::Deb),
       "ios" => Some(PackageType::IosBundle),
       "msi" => Some(PackageType::WindowsMsi),
+      "nsis" => Some(PackageType::Nsis),
       "app" => Some(PackageType::MacOsBundle),
       "rpm" => Some(PackageType::Rpm),
       "appimage" => Some(PackageType::AppImage),
@@ -75,6 +80,7 @@ impl PackageType {
       PackageType::Deb => "deb",
       PackageType::IosBundle => "ios",
       PackageType::WindowsMsi => "msi",
+      PackageType::Nsis => "nsis",
       PackageType::MacOsBundle => "app",
       PackageType::Rpm => "rpm",
       PackageType::AppImage => "appimage",
@@ -96,6 +102,8 @@ const ALL_PACKAGE_TYPES: &[PackageType] = &[
   PackageType::IosBundle,
   #[cfg(target_os = "windows")]
   PackageType::WindowsMsi,
+  #[cfg(target_os = "windows")]
+  PackageType::Nsis,
   #[cfg(target_os = "macos")]
   PackageType::MacOsBundle,
   #[cfg(target_os = "linux")]
@@ -129,12 +137,8 @@ pub struct PackageSettings {
 pub struct UpdaterSettings {
   /// Whether the updater is active or not.
   pub active: bool,
-  /// The updater endpoints.
-  pub endpoints: Option<Vec<String>>,
   /// Signature public key.
   pub pubkey: String,
-  /// Display built-in dialog or use event system if disabled.
-  pub dialog: bool,
   /// Args to pass to `msiexec.exe` to run the updater on Windows.
   pub msiexec_args: Option<&'static [&'static str]>,
 }
@@ -148,6 +152,15 @@ pub struct DebianSettings {
   /// List of custom files to add to the deb package.
   /// Maps the path on the debian package to the path of the file to include (relative to the current working directory).
   pub files: HashMap<PathBuf, PathBuf>,
+  /// Path to a custom desktop file Handlebars template.
+  ///
+  /// Available variables: `categories`, `comment` (optional), `exec`, `icon` and `name`.
+  ///
+  /// Default file contents:
+  /// ```text
+  #[doc = include_str!("./linux/templates/main.desktop")]
+  /// ```
+  pub desktop_template: Option<PathBuf>,
 }
 
 /// The macOS bundle settings.
@@ -241,6 +254,43 @@ pub struct WixSettings {
   pub fips_compliant: bool,
 }
 
+/// Settings specific to the NSIS implementation.
+#[derive(Clone, Debug, Default)]
+pub struct NsisSettings {
+  /// A custom .nsi template to use.
+  pub template: Option<PathBuf>,
+  /// The path to the license file to render on the installer.
+  pub license: Option<PathBuf>,
+  /// The path to a bitmap file to display on the header of installers pages.
+  ///
+  /// The recommended dimensions are 150px x 57px.
+  pub header_image: Option<PathBuf>,
+  /// The path to a bitmap file for the Welcome page and the Finish page.
+  ///
+  /// The recommended dimensions are 164px x 314px.
+  pub sidebar_image: Option<PathBuf>,
+  /// The path to an icon file used as the installer icon.
+  pub installer_icon: Option<PathBuf>,
+  /// Whether the installation will be for all users or just the current user.
+  pub install_mode: NSISInstallerMode,
+  /// A list of installer languages.
+  /// By default the OS language is used. If the OS language is not in the list of languages, the first language will be used.
+  /// To allow the user to select the language, set `display_language_selector` to `true`.
+  ///
+  /// See <https://github.com/kichik/nsis/tree/9465c08046f00ccb6eda985abbdbf52c275c6c4d/Contrib/Language%20files> for the complete list of languages.
+  pub languages: Option<Vec<String>>,
+  /// An key-value pair where the key is the language and the
+  /// value is the path to a custom `.nsi` file that holds the translated text for tauri's custom messages.
+  ///
+  /// See <https://github.com/tauri-apps/tauri/blob/dev/tooling/bundler/src/bundle/windows/templates/nsis-languages/English.nsh> for an example `.nsi` file.
+  ///
+  /// **Note**: the key must be a valid NSIS language and it must be added to [`NsisConfig`]languages array,
+  pub custom_language_files: Option<HashMap<String, PathBuf>>,
+  /// Whether to display a language selector dialog before the installer and uninstaller windows are rendered or not.
+  /// By default the OS language is selected, with a fallback to the first language in the `languages` array.
+  pub display_language_selector: bool,
+}
+
 /// The Windows bundle settings.
 #[derive(Clone, Debug)]
 pub struct WindowsSettings {
@@ -255,6 +305,8 @@ pub struct WindowsSettings {
   pub tsp: bool,
   /// WiX configuration.
   pub wix: Option<WixSettings>,
+  /// Nsis configuration.
+  pub nsis: Option<NsisSettings>,
   /// The path to the application icon. Defaults to `./icons/icon.ico`.
   pub icon_path: PathBuf,
   /// The installation mode for the Webview2 runtime.
@@ -281,6 +333,7 @@ impl Default for WindowsSettings {
       timestamp_url: None,
       tsp: false,
       wix: None,
+      nsis: None,
       icon_path: PathBuf::from("icons/icon.ico"),
       webview_install_mode: Default::default(),
       webview_fixed_runtime_path: None,
@@ -294,6 +347,9 @@ impl Default for WindowsSettings {
 pub struct BundleSettings {
   /// the app's identifier.
   pub identifier: Option<String>,
+  /// The app's publisher. Defaults to the second element in the identifier string.
+  /// Currently maps to the Manufacturer property of the Windows Installer.
+  pub publisher: Option<String>,
   /// the app's icon list.
   pub icon: Option<Vec<String>>,
   /// the app's resources to bundle.
@@ -306,6 +362,8 @@ pub struct BundleSettings {
   pub copyright: Option<String>,
   /// the app's category.
   pub category: Option<AppCategory>,
+  /// the file associations
+  pub file_associations: Option<Vec<FileAssociation>>,
   /// the app's short description.
   pub short_description: Option<String>,
   /// the app's long description.
@@ -392,6 +450,8 @@ impl BundleBinary {
 /// The Settings exposed by the module.
 #[derive(Clone, Debug)]
 pub struct Settings {
+  /// The log level.
+  log_level: log::Level,
   /// the package settings.
   package: PackageSettings,
   /// the package types we're bundling.
@@ -411,6 +471,7 @@ pub struct Settings {
 /// A builder for [`Settings`].
 #[derive(Default)]
 pub struct SettingsBuilder {
+  log_level: Option<log::Level>,
   project_out_directory: Option<PathBuf>,
   package_types: Option<Vec<PackageType>>,
   package_settings: Option<PackageSettings>,
@@ -469,11 +530,18 @@ impl SettingsBuilder {
     self
   }
 
+  /// Sets the log level for spawned commands. Defaults to [`log::Level::Error`].
+  #[must_use]
+  pub fn log_level(mut self, level: log::Level) -> Self {
+    self.log_level.replace(level);
+    self
+  }
+
   /// Builds a Settings from the CLI args.
   ///
   /// Package settings will be read from Cargo.toml.
   ///
-  /// Bundle settings will be read from from $TAURI_DIR/tauri.conf.json if it exists and fallback to Cargo.toml's [package.metadata.bundle].
+  /// Bundle settings will be read from $TAURI_DIR/tauri.conf.json if it exists and fallback to Cargo.toml's [package.metadata.bundle].
   pub fn build(self) -> crate::Result<Settings> {
     let target = if let Some(t) = self.target {
       t
@@ -482,6 +550,7 @@ impl SettingsBuilder {
     };
 
     Ok(Settings {
+      log_level: self.log_level.unwrap_or(log::Level::Error),
       package: self.package_settings.expect("package settings is required"),
       package_types: self.package_types,
       project_out_directory: self
@@ -502,6 +571,16 @@ impl SettingsBuilder {
 }
 
 impl Settings {
+  /// Sets the log level for spawned commands.
+  pub fn set_log_level(&mut self, level: log::Level) {
+    self.log_level = level;
+  }
+
+  /// Returns the log level for spawned commands.
+  pub fn log_level(&self) -> log::Level {
+    self.log_level
+  }
+
   /// Returns the directory where the bundle should be placed.
   pub fn project_out_directory(&self) -> &Path {
     &self.project_out_directory
@@ -562,16 +641,21 @@ impl Settings {
   ///
   /// Fails if the host/target's native package type is not supported.
   pub fn package_types(&self) -> crate::Result<Vec<PackageType>> {
-    let target_os = std::env::consts::OS;
-    let mut platform_types = match target_os {
+    let target_os = self
+      .target
+      .split('-')
+      .nth(2)
+      .unwrap_or(std::env::consts::OS)
+      .replace("darwin", "macos");
+
+    let mut platform_types = match target_os.as_str() {
       "macos" => vec![PackageType::MacOsBundle, PackageType::Dmg],
       "ios" => vec![PackageType::IosBundle],
       "linux" => vec![PackageType::Deb, PackageType::AppImage],
-      "windows" => vec![PackageType::WindowsMsi],
+      "windows" => vec![PackageType::WindowsMsi, PackageType::Nsis],
       os => {
         return Err(crate::Error::GenericError(format!(
-          "Native {} bundles not yet supported.",
-          os
+          "Native {os} bundles not yet supported."
         )))
       }
     };
@@ -607,6 +691,11 @@ impl Settings {
   /// Returns the bundle's identifier
   pub fn bundle_identifier(&self) -> &str {
     self.bundle_settings.identifier.as_deref().unwrap_or("")
+  }
+
+  /// Returns the bundle's identifier
+  pub fn publisher(&self) -> Option<&str> {
+    self.bundle_settings.publisher.as_deref()
   }
 
   /// Returns an iterator over the icon files to be used for this bundle.
@@ -646,7 +735,7 @@ impl Settings {
           .to_string_lossy()
           .replace(&format!("-{}", self.target), ""),
       );
-      common::copy_file(&src, &dest)?;
+      common::copy_file(&src, dest)?;
     }
     Ok(())
   }
@@ -656,7 +745,7 @@ impl Settings {
     for src in self.resource_files() {
       let src = src?;
       let dest = path.join(tauri_utils::resources::resource_relpath(&src));
-      common::copy_file(&src, &dest)?;
+      common::copy_file(&src, dest)?;
     }
     Ok(())
   }
@@ -697,6 +786,11 @@ impl Settings {
   /// Returns the app's category.
   pub fn app_category(&self) -> Option<AppCategory> {
     self.bundle_settings.category
+  }
+
+  /// Return file associations.
+  pub fn file_associations(&self) -> &Option<Vec<FileAssociation>> {
+    &self.bundle_settings.file_associations
   }
 
   /// Returns the app's short description.
